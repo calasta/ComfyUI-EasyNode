@@ -365,18 +365,20 @@ class EasyNodeFluxImageEdit:
         return (positive_conditioning, negative_conditioning, latent)
 
 # ==============================================================================
-#                               PART 4: Style Prompt Node (新增风格节点)
+#                               PART 4: Style Prompt Node 
 # ==============================================================================
 class EasyNodeStylePrompt:
     @classmethod
     def INPUT_TYPES(cls):
-        # 初始化时提供占位符，真实列表将由 JS 根据 STYLE_PRESETS 动态生成
         models = list(STYLE_PRESETS.keys()) if STYLE_PRESETS else ["None"]
         return {
             "required": {
                 "Model": (models, ),
                 "Category": (["None"], ),
                 "Style": (["None"], ),
+                # 增加两个文本框，供用户输入想要替换的提示词
+                "text_pos": ("STRING", {"multiline": True, "default": "", "dynamicPrompts": True}),
+                "text_neg": ("STRING", {"multiline": True, "default": "", "dynamicPrompts": True}),
             }
         }
     
@@ -385,7 +387,7 @@ class EasyNodeStylePrompt:
     FUNCTION = "get_style"
     CATEGORY = "EasyNode/Prompt"
 
-    def get_style(self, Model, Category, Style):
+    def get_style(self, Model, Category, Style, text_pos="", text_neg=""):
         pos = ""
         neg = ""
         try:
@@ -393,13 +395,33 @@ class EasyNodeStylePrompt:
             pos = style_data.get("positive", "")
             neg = style_data.get("negative", "")
         except KeyError:
-            pass # 如果匹配失败则返回空字符串
+            pass 
+
+        # 处理 Positive 替换
+        if text_pos:
+            if "{$@}" in pos:
+                pos = pos.replace("{$@}", text_pos)
+            else:
+                # 如果预设中没有占位符，默认将输入的词拼接到最后面
+                pos = f"{pos},{text_pos} " if pos else text_pos
+        else:
+            # 如果输入框为空，清理掉占位符
+            pos = pos.replace("{$@}", "").strip(", ") 
+
+        # 处理 Negative 替换
+        if text_neg:
+            if "{$@}" in neg:
+                neg = neg.replace("{$@}", text_neg)
+            else:
+                neg = f"{text_neg}, {neg}" if neg else text_neg
+        else:
+            neg = neg.replace("{$@}", "").strip(", ") 
+
         return (pos, neg)
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
-        # 【重要】因为 Category 和 Style 是前端 JS 动态填充的，
-        # 为了防止 ComfyUI 后端验证报错，必须覆盖此方法并永远返回 True。
+        # 必须覆盖，因为 Category 和 Style 是由前端 JS 动态填充的
         return True
     
 # ==============================================================================
@@ -421,5 +443,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "EasySizeSimpleSetting": "EasyNode 简单尺寸设置",
     "EasyNodeLoader":        "EasyNode 加载图像 (Loader)",
     "EasyNodeFluxImageEdit":  "EasyNode Flux 图像编辑",
-    "EasyNodeStylePrompt":   "EasyNode 预设风格提示词"
+    "EasyNodeStylePrompt":   "EasyNode StylePrompt"
 }
