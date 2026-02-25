@@ -7,58 +7,26 @@ import folder_paths
 import zipfile
 import io
 import math
-from collections import OrderedDict
 
-# 新增：插件 B 所需的 ComfyUI 核心引用
+# --- 引入 ComfyUI Server 用于构建内部 API ---
+import server
+from aiohttp import web
+
+# --- 引入EasySize Preset 数据 ---
+from .presets import PRESETS, CROP_METHODS, RESIZE_ALGOS, get_size_from_preset, STYLE_PRESETS
+
+# --- 插件 B 所需的 ComfyUI 核心引用 ---
 import node_helpers
 import comfy.utils
 import comfy.model_management
 
 # ==============================================================================
-#                               PART 0: PRESETS
+#                            API ROUTE FOR JS FRONTEND
 # ==============================================================================
-PRESETS = OrderedDict([
-    ("SD1.5", [
-        ("512×512 (1:1)", (512, 512)), ("768×512 (3:2)", (768, 512)),
-        ("512×768 (2:3)", (512, 768)), ("768×576 (4:3)", (768, 576)), ("576×768 (3:4)", (576, 768)),
-    ]),
-    ("SDXL", [
-        ("1024×1024 (1:1)", (1024, 1024)), ("1152×896 (9:7)", (1152, 896)),
-        ("896×1152 (7:9)", (896, 1152)), ("1344×768 (7:4)", (1344, 768)), ("768×1344 (4:7)", (768, 1344)),
-        ("1216×832 (19:13)", (1216, 832)), ("832×1216 (13:19)", (832, 1216)), ("1280×768 (5:3)", (1280, 768)),
-        ("768×1280 (3:5)", (768, 1280)), ("1536×640 (12:5)", (1536, 640)), ("640×1536 (5:12)", (640, 1536)),
-        ("1600×640 (5:2)", (1600, 640)), ("640×1600 (2:5)", (640, 1600)),
-    ]),
-    ("FLUX", [
-        ("1024×1024 (1:1)", (1024, 1024)), ("1920×1080 (16:9)", (1920, 1080)), ("1080×1920 (9:16)", (1080, 1920)),
-        ("1536×640 (12:5)", (1536, 640)), ("640×1536 (5:12)", (640, 1536)), ("1600×1600 (1:1)", (1600, 1600)),
-        ("1280×720 (16:9)", (1280, 720)), ("720×1280 (9:16)", (720, 1280)), ("1366×768 (16:9)", (1366, 768)),
-        ("768×1366 (9:16)", (768, 1366)), ("2560×1440 (16:9)", (2560, 1440)),
-    ]),
-    ("WAN", [
-        ("832×480 (16:9)", (832, 480)), ("480×832 (9:16)", (480, 832)), ("896×512 (7:4)", (896, 512)),
-        ("512×896 (4:7)", (512, 896)), ("1280×720 (16:9)", (1280, 720)), ("720×1280 (9:16)", (720, 1280)),
-        ("640×480 (4:3)", (640, 480)), ("960×720 (4:3)", (960, 720)), ("480×640 (3:4)", (480, 640)),
-        ("720×960 (3:4)", (720, 960)), ("720×720 (1:1)", (720, 720)), ("480×480 (1:1)", (480, 480)),
-        ("1024×576 (16:9)", (1024, 576)), ("576×1024 (9:16)", (576, 1024)),
-    ]),
-    ("QWEN", [
-        ("1328×1328 (1:1)", (1328, 1328)), ("928×1664 (9:16)", (928, 1664)), ("1664×928 (16:9)", (1664, 928)),
-        ("1104×1472 (3:4)", (1104, 1472)), ("1472×1104 (4:3)", (1472, 1104)), ("1056×1584 (2:3)", (1056, 1584)),
-        ("1584×1056 (3:2)", (1584, 1056)),
-    ])
-])
-
-CROP_METHODS = ["中心裁剪", "直接缩放"]
-RESIZE_ALGOS = ["lanczos", "bilinear", "nearest"]
-
-def get_size_from_preset(choices: dict):
-    for k, v in choices.items():
-        if v != "关":
-            for name, wh in PRESETS[k]:
-                if name == v:
-                    return wh
-    return (512, 512)
+# 暴露预设给前端 JS 以实现动态三级联动
+@server.PromptServer.instance.routes.get("/easynode/get_styles")
+async def get_styles(request):
+    return web.json_response(STYLE_PRESETS)
 
 # ==============================================================================
 #                               PART 1: EasySize Nodes
@@ -397,6 +365,44 @@ class EasyNodeFluxImageEdit:
         return (positive_conditioning, negative_conditioning, latent)
 
 # ==============================================================================
+#                               PART 4: Style Prompt Node (新增风格节点)
+# ==============================================================================
+class EasyNodeStylePrompt:
+    @classmethod
+    def INPUT_TYPES(cls):
+        # 初始化时提供占位符，真实列表将由 JS 根据 STYLE_PRESETS 动态生成
+        models = list(STYLE_PRESETS.keys()) if STYLE_PRESETS else ["None"]
+        return {
+            "required": {
+                "Model": (models, ),
+                "Category": (["None"], ),
+                "Style": (["None"], ),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("positive", "negative")
+    FUNCTION = "get_style"
+    CATEGORY = "EasyNode/Prompt"
+
+    def get_style(self, Model, Category, Style):
+        pos = ""
+        neg = ""
+        try:
+            style_data = STYLE_PRESETS[Model][Category][Style]
+            pos = style_data.get("positive", "")
+            neg = style_data.get("negative", "")
+        except KeyError:
+            pass # 如果匹配失败则返回空字符串
+        return (pos, neg)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        # 【重要】因为 Category 和 Style 是前端 JS 动态填充的，
+        # 为了防止 ComfyUI 后端验证报错，必须覆盖此方法并永远返回 True。
+        return True
+    
+# ==============================================================================
 #                               REGISTRATION
 # ==============================================================================
 
@@ -405,7 +411,8 @@ NODE_CLASS_MAPPINGS = {
     "EasySizeSimpleLatent":  EasySizeSimpleLatent,
     "EasySizeSimpleSetting": EasySizeSimpleSetting,
     "EasyNodeLoader":        EasyNodeLoader,
-    "EasyNodeFluxImageEdit":  EasyNodeFluxImageEdit 
+    "EasyNodeFluxImageEdit":  EasyNodeFluxImageEdit,
+    "EasyNodeStylePrompt":   EasyNodeStylePrompt
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -413,5 +420,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "EasySizeSimpleLatent":  "EasyNode 简单图像尺寸-Latent",
     "EasySizeSimpleSetting": "EasyNode 简单尺寸设置",
     "EasyNodeLoader":        "EasyNode 加载图像 (Loader)",
-    "EasyNodeFluxImageEdit":  "EasyNode Flux 图像编辑" 
+    "EasyNodeFluxImageEdit":  "EasyNode Flux 图像编辑",
+    "EasyNodeStylePrompt":   "EasyNode 预设风格提示词"
 }

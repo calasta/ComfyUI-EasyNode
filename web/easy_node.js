@@ -1,5 +1,5 @@
-import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+import { app } from "../../../scripts/app.js";
 
 console.log("[EasyNode] Initializing JS V17 (Unified Loader + Smart Flux Edit)...");
 
@@ -258,13 +258,13 @@ class ImageBrushWidget {
         const mw = this.node.widgets.find(w => w.name === "mask_data");
         if (mw) { mw.value = data.name; if (mw.callback) mw.callback(data.name); }
     }
-    floodFill(x,y){/*...保持原代码填充逻辑...*/}
+    floodFill(_x,_y){/*...保持原代码填充逻辑...*/}
 }
 
 // --- Main Extension Registration ---
 app.registerExtension({
     name: "Comfy.EasyNode",
-    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         
         // --- EasyNodeLoader (笔刷涂鸦) ---
         if (nodeData.name === "EasyNodeLoader") {
@@ -301,11 +301,11 @@ app.registerExtension({
             };
         }
 
-// --- EasyNodeFluxImageEdit  ---
+        // --- EasyNodeFluxImageEdit  ---
         if (nodeData.name === "EasyNodeFluxImageEdit") {
             
             const onConnectionsChange = nodeType.prototype.onConnectionsChange;
-            nodeType.prototype.onConnectionsChange = function(type, index, connected, link_info) {
+            nodeType.prototype.onConnectionsChange = function(type, index, connected, _link_info) {
                 if (onConnectionsChange) onConnectionsChange.apply(this, arguments);
 
                 // 只处理输入端的连接变化
@@ -370,6 +370,77 @@ app.registerExtension({
                 }, 100);
                 return r;
             };
+        }
+        // --- EasyNodeStylePrompt (新增：风格提示词三级联动) ---
+        if (nodeData.name === "EasyNodeStylePrompt") {
+          const onNodeCreated = nodeType.prototype.onNodeCreated;
+          nodeType.prototype.onNodeCreated = function () {
+            const r = onNodeCreated
+              ? onNodeCreated.apply(this, arguments)
+              : undefined;
+
+            // 获取该节点上的下拉框 Widget
+            const modelWidget = this.widgets.find((w) => w.name === "Model");
+            const categoryWidget = this.widgets.find(
+              (w) => w.name === "Category",
+            );
+            const styleWidget = this.widgets.find((w) => w.name === "Style");
+
+            if (!modelWidget || !categoryWidget || !styleWidget) return r;
+
+            // 异步请求我们在后端 nodes.py 建立的内部 API 获取字典数据
+            api
+              .fetchApi("/easynode/get_styles")
+              .then((res) => res.json())
+              .then((presets) => {
+                // 当 Model 改变时，更新 Category 下拉列表
+                const updateCategories = () => {
+                  const model = modelWidget.value;
+                  const categories = presets[model]
+                    ? Object.keys(presets[model])
+                    : ["None"];
+
+                  categoryWidget.options.values = categories;
+                  // 如果当前的分类不再新列表里，默认选中第一个
+                  if (!categories.includes(categoryWidget.value)) {
+                    categoryWidget.value = categories[0] || "None";
+                  }
+                  updateStyles(); // 联动触发更新第三级 Style
+                };
+
+                // 当 Category 改变时，更新 Style 下拉列表
+                const updateStyles = () => {
+                  const model = modelWidget.value;
+                  const category = categoryWidget.value;
+                  const styles =
+                    presets[model] && presets[model][category]
+                      ? Object.keys(presets[model][category])
+                      : ["None"];
+
+                  styleWidget.options.values = styles;
+                  if (!styles.includes(styleWidget.value)) {
+                    styleWidget.value = styles[0] || "None";
+                  }
+                  // 强制 ComfyUI 刷新界面显示
+                  app.graph.setDirtyCanvas(true, true);
+                };
+
+                // 绑定事件回调
+                modelWidget.callback = updateCategories;
+                categoryWidget.callback = updateStyles;
+
+                // 首次加载初始化数据
+                const models = Object.keys(presets);
+                modelWidget.options.values =
+                  models.length > 0 ? models : ["None"];
+                if (!models.includes(modelWidget.value)) {
+                  modelWidget.value = models[0] || "None";
+                }
+                updateCategories();
+              });
+
+            return r;
+          };
         }
     }
 });
