@@ -15,7 +15,7 @@ from aiohttp import web
 # --- 引入EasySize Preset 数据 ---
 from .presets import PRESETS, CROP_METHODS, RESIZE_ALGOS, get_size_from_preset, STYLE_PRESETS
 
-# --- 插件 B 所需的 ComfyUI 核心引用 ---
+# --- ComfyUI 核心引用 ---
 import node_helpers
 import comfy.utils
 import comfy.model_management
@@ -425,23 +425,156 @@ class EasyNodeStylePrompt:
         return True
     
 # ==============================================================================
+#                               PART 5: Image Compression & Save Nodes
+# ==============================================================================
+class EasyNodeImageCompression:
+    """
+    高质量图片压缩节点
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "quality": ("INT", {
+                    "default": 90,
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "display": "number",
+                    "description": "压缩质量（0-100，默认90，如果图像较大例如10MB，可以设置为85左右，具体设置多少看你需要压缩成多大的文件大小，数值越低压缩越狠，质量就会有所下降，最低80左右就差不多，只会非常轻微的压缩图片质量，85往上图片压缩后，没有明显的质量下降，但是文件大小明显缩小。）"
+                }),
+            },
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "compress"
+    CATEGORY = "EasyNode/Image"
+    DESCRIPTION = "KOOK Image Compression Node (EasyNode版)"
+    
+    def compress(self, image, quality):
+        batch_size = image.shape[0]
+        compressed_images = []
+        
+        for i in range(batch_size):
+            img = image[i]
+            img_np = (img.cpu().numpy() * 255).astype(np.uint8)
+            
+            if img_np.shape[-1] == 4:
+                pil_img = Image.fromarray(img_np).convert("RGB")
+            else:
+                pil_img = Image.fromarray(img_np)
+            
+            buffer_compressed = io.BytesIO()
+            pil_img.save(buffer_compressed, format="JPEG", quality=quality, optimize=True, subsampling=1)
+            
+            buffer_compressed.seek(0)
+            pil_img_compressed = Image.open(buffer_compressed)
+            img_compressed_np = np.array(pil_img_compressed)
+            
+            if len(img_compressed_np.shape) == 2:
+                img_compressed_np = np.stack([img_compressed_np] * 3, axis=-1)
+            elif img_compressed_np.shape[-1] == 1:
+                img_compressed_np = np.repeat(img_compressed_np, 3, axis=-1)
+            
+            img_compressed_np = img_compressed_np.astype(np.float32) / 255.0
+            img_compressed_tensor = torch.from_numpy(img_compressed_np)
+            compressed_images.append(img_compressed_tensor)
+        
+        compressed_images_tensor = torch.stack(compressed_images)
+        return (compressed_images_tensor,)
+
+class EasyNodeSaveJPGImage:
+    """
+    保存JPG图像节点
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "filename_prefix": ("STRING", {"default": "Comfyui_"}),
+            },
+            "optional": {
+                "save_path": ("STRING", {"default": ""}),
+            },
+        }
+    
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
+    FUNCTION = "save_jpg"
+    CATEGORY = "EasyNode/Image"
+    OUTPUT_NODE = True
+    DESCRIPTION = "KOOK Save JPG Image Node (EasyNode版)"
+    
+    def save_jpg(self, images, filename_prefix, save_path=""):
+        preview_dir = "output"
+        if not os.path.exists(preview_dir):
+            os.makedirs(preview_dir, exist_ok=True)
+        
+        actual_dir = save_path.strip() if save_path and save_path.strip() else preview_dir
+        
+        if not os.path.exists(actual_dir):
+            os.makedirs(actual_dir, exist_ok=True)
+        
+        batch_size = images.shape[0]
+        saved_images = []
+        
+        for i in range(batch_size):
+            img = images[i]
+            img_np = (img.cpu().numpy() * 255).astype(np.uint8)
+            
+            if img_np.shape[-1] == 4:
+                pil_img = Image.fromarray(img_np).convert("RGB")
+            else:
+                pil_img = Image.fromarray(img_np)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{filename_prefix}{timestamp}_{i+1}.jpg"
+            actual_file_path = os.path.join(actual_dir, filename)
+            pil_img.save(actual_file_path, format="JPEG", quality=90, optimize=True)
+            
+            preview_file_path = os.path.join(preview_dir, filename)
+            if actual_dir != preview_dir:
+                pil_img.save(preview_file_path, format="JPEG", quality=90, optimize=True)
+            
+            saved_images.append({
+                "filename": filename,
+                "subfolder": "",
+                "type": "output"
+            })
+        
+        return {
+            "ui": {
+                "images": saved_images
+            },
+            "result": ()
+        }
+
+
+# ==============================================================================
 #                               REGISTRATION
 # ==============================================================================
 
 NODE_CLASS_MAPPINGS = {
-    "EasySizeSimpleImage":   EasySizeSimpleImage,
-    "EasySizeSimpleLatent":  EasySizeSimpleLatent,
-    "EasySizeSimpleSetting": EasySizeSimpleSetting,
-    "EasyNodeLoader":        EasyNodeLoader,
-    "EasyNodeFluxImageEdit":  EasyNodeFluxImageEdit,
-    "EasyNodeStylePrompt":   EasyNodeStylePrompt
+    "EasySizeSimpleImage":      EasySizeSimpleImage,
+    "EasySizeSimpleLatent":     EasySizeSimpleLatent,
+    "EasySizeSimpleSetting":    EasySizeSimpleSetting,
+    "EasyNodeLoader":           EasyNodeLoader,
+    "EasyNodeFluxImageEdit":    EasyNodeFluxImageEdit,
+    "EasyNodeStylePrompt":      EasyNodeStylePrompt,
+    "EasyNodeImageCompression": EasyNodeImageCompression,
+    "EasyNodeSaveJPGImage":     EasyNodeSaveJPGImage
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "EasySizeSimpleImage":   "EasyNode 简单图像尺寸",
-    "EasySizeSimpleLatent":  "EasyNode 简单图像尺寸-Latent",
-    "EasySizeSimpleSetting": "EasyNode 简单尺寸设置",
-    "EasyNodeLoader":        "EasyNode 加载图像 (Loader)",
-    "EasyNodeFluxImageEdit":  "EasyNode Flux 图像编辑",
-    "EasyNodeStylePrompt":   "EasyNode StylePrompt"
+    "EasySizeSimpleImage":      "EasyNode 简单图像尺寸",
+    "EasySizeSimpleLatent":     "EasyNode 简单图像尺寸-Latent",
+    "EasySizeSimpleSetting":    "EasyNode 简单尺寸设置",
+    "EasyNodeLoader":           "EasyNode 加载图像 (Loader)",
+    "EasyNodeFluxImageEdit":    "EasyNode Flux 图像编辑",
+    "EasyNodeStylePrompt":      "EasyNode 预设风格提示词",
+    "EasyNodeImageCompression": "EasyNode 图像压缩 (Compression)",
+    "EasyNodeSaveJPGImage":     "EasyNode 保存JPG (Save JPG)"
 }
